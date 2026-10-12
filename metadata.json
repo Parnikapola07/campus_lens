@@ -1,0 +1,6 @@
+{
+  "name": "CampusLens",
+  "description": "Transform visual campus posters and notices into structured events, action items, and conflict-free schedules using local Gemma inference.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
