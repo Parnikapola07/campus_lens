@@ -62,7 +62,7 @@ ollama run gemma4:e2b
 
 To verify Ollama's API is listening locally on port 11434, open your browser or run:
 ```powershell
-curl http://localhost:11434/api/tags
+curl http://127.0.0.1:11434/api/tags
 ```
 You should see a JSON response listing your downloaded models including `gemma4:e2b`.
 
@@ -87,9 +87,9 @@ Copy `.env.example` to `.env`:
 copy .env.example .env
 ```
 
-The default values in `.env` are pre-configured for your Windows setup:
+The default values in `.env` are pre-configured for your Windows setup using IPv4:
 ```env
-OLLAMA_BASE_URL="http://localhost:11434"
+OLLAMA_BASE_URL="http://127.0.0.1:11434"
 OLLAMA_MODEL="gemma4:e2b"
 PORT=3000
 ```
@@ -116,17 +116,35 @@ This starts:
 
 ---
 
-### Step 5: Open in Your Browser
+### Step 5: Test Backend Health Check & Image Extraction
 
-Navigate to:
-```
-http://localhost:3000
-```
+You can verify the backend connection directly in PowerShell or Command Prompt:
 
-You will see:
-- The top-right badge shows: **`Ollama: gemma4:e2b`** with a green connected indicator.
-- Upload any JPG, PNG, or WebP poster to extract details.
-- Or click **Load Demo Data** to explore the pre-loaded overlapping notices.
+1. **Test the health-check endpoint:**
+   ```powershell
+   curl http://localhost:3000/api/ollama/health
+   ```
+   Returns:
+   ```json
+   {
+     "connected": true,
+     "httpStatus": 200,
+     "statusText": "OK",
+     "baseUrl": "http://127.0.0.1:11434",
+     "model": "gemma4:e2b",
+     "availableModels": ["gemma4:e2b", ...],
+     "modelInstalled": true,
+     "modelReady": true,
+     "latencyMs": 14
+   }
+   ```
+
+2. **Open in your browser:**
+   Navigate to:
+   ```
+   http://localhost:3000
+   ```
+   The top-right badge will show **`Ollama: gemma4:e2b`** in teal. Drag and drop any campus flyer, and click **Analyze with gemma4:e2b** to perform live visual extraction!
 
 ---
 

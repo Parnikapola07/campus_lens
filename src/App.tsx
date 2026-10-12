@@ -82,27 +82,30 @@ export default function App() {
     return notices.find((n) => n.id === selectedNoticeId) || notices[0] || null;
   }, [notices, selectedNoticeId]);
 
-  // Check Ollama connection status
+  // Check Ollama connection status via backend health-check route
   const checkOllamaStatus = useCallback(async () => {
     setStatusLoading(true);
     try {
-      const res = await fetch('/api/ollama/status');
-      if (res.ok) {
-        const data = await res.json();
+      const res = await fetch('/api/ollama/health');
+      const data = await res.json().catch(() => null);
+      if (data) {
         setOllamaStatus(data);
       } else {
         setOllamaStatus({
           connected: false,
-          baseUrl: 'http://localhost:11434',
+          httpStatus: res.status,
+          statusText: res.statusText,
+          baseUrl: 'http://127.0.0.1:11434',
           model: 'gemma4:e2b',
           availableModels: [],
-          error: `Adapter responded with HTTP ${res.status}`,
+          error: `Health check responded with HTTP ${res.status}: ${res.statusText}`,
         });
       }
     } catch (err: unknown) {
       setOllamaStatus({
         connected: false,
-        baseUrl: 'http://localhost:11434',
+        httpStatus: null,
+        baseUrl: 'http://127.0.0.1:11434',
         model: 'gemma4:e2b',
         availableModels: [],
         error: err instanceof Error ? err.message : 'Network error checking Ollama',

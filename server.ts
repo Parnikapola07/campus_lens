@@ -9,8 +9,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configurable Ollama endpoint & model from environment
-let ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+// Configurable Ollama endpoint & model from environment (defaulting to 127.0.0.1 for Windows IPv4 reliability)
+let ollamaBaseUrl = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 let ollamaModel = process.env.OLLAMA_MODEL || 'gemma4:e2b';
 
 // Increase payload limits for base64 notice posters
@@ -46,76 +46,168 @@ function cleanJsonResponse(text: string): string {
   return cleaned;
 }
 
-// 1. Ollama status & model check
-app.get('/api/ollama/status', async (_req, res) => {
+// Resilient Node.js fetch helper for local Ollama
+// Handles Windows localhost IPv6 (::1) vs IPv4 (127.0.0.1) resolution differences
+async function fetchOllama(endpointPath: string, options: RequestInit = {}, timeoutMs = 5000) {
+  const cleanPath = endpointPath.startsWith('/') ? endpointPath : `/${endpointPath}`;
+  const base = ollamaBaseUrl.replace(/\/+$/, '');
+  const primaryUrl = `${base}${cleanPath}`;
+
+  // Candidates list to handle Windows IPv4 vs IPv6 issues
+  const candidates: string[] = [primaryUrl];
+  if (base.includes('localhost')) {
+    candidates.push(`${base.replace('localhost', '127.0.0.1')}${cleanPath}`);
+  } else if (base.includes('127.0.0.1')) {
+    candidates.push(`${base.replace('127.0.0.1', 'localhost')}${cleanPath}`);
+  }
+
+  let lastError: unknown = null;
+
+  for (const url of candidates) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      // If successful or received an HTTP status from Ollama, this host is reachable
+      const parsedUrl = new URL(url);
+      const workingBase = `${parsedUrl.protocol}//${parsedUrl.host}`;
+      if (workingBase !== ollamaBaseUrl && response.ok) {
+        ollamaBaseUrl = workingBase;
+      }
+
+      return { response, url, error: null };
+    } catch (err) {
+      clearTimeout(timeoutId);
+      lastError = err;
+    }
+  }
+
+  return { response: null, url: primaryUrl, error: lastError };
+}
+
+// Health check handler for /api/ollama/health and /api/ollama/status
+async function handleOllamaHealthCheck(_req: express.Request, res: express.Response) {
+  res.setHeader('Content-Type', 'application/json');
+
   const isCloudPreview = !process.env.RUNNING_LOCALLY && (
     process.env.K_SERVICE !== undefined ||
     process.env.APP_URL?.includes('.run.app') ||
     process.env.HOST_URL?.includes('.run.app')
   );
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-  try {
-    const targetUrl = `${ollamaBaseUrl.replace(/\/+$/, '')}/api/tags`;
-    const response = await fetch(targetUrl, {
+  const startTime = Date.now();
+  const { response, url, error } = await fetchOllama(
+    '/api/tags',
+    {
       method: 'GET',
-      headers: { 'Accept': 'application/json' },
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+      headers: { Accept: 'application/json' },
+    },
+    5000
+  );
 
-    if (!response.ok) {
-      return res.status(200).json({
-        connected: false,
-        baseUrl: ollamaBaseUrl,
-        model: ollamaModel,
-        availableModels: [],
-        error: `Ollama returned HTTP ${response.status}: ${response.statusText}`,
-        isCloudPreview,
-      });
-    }
+  const latencyMs = Date.now() - startTime;
 
-    const data = await response.json();
-    const availableModels = Array.isArray(data.models)
-      ? data.models.map((m: { name: string }) => m.name)
-      : [];
-    const modelReady = availableModels.some((m: string) =>
-      m === ollamaModel || m.startsWith(ollamaModel.split(':')[0])
-    );
+  // Connection failure / network unreachable (e.g. ECONNREFUSED)
+  if (error || !response) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const errorCause = (error as any)?.cause ? JSON.stringify((error as any).cause) : '';
+    const fullError = errorCause ? `${errorMsg} (${errorCause})` : errorMsg;
 
-    return res.json({
-      connected: true,
-      baseUrl: ollamaBaseUrl,
-      model: ollamaModel,
-      availableModels,
-      modelReady,
-      isCloudPreview: false,
-    });
-  } catch (err: unknown) {
-    clearTimeout(timeoutId);
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    const isConnRefused = errorMessage.includes('ECONNREFUSED') || errorMessage.includes('fetch failed') || errorMessage.includes('aborted');
-
-    return res.status(200).json({
+    return res.status(503).json({
       connected: false,
+      httpStatus: 503,
+      statusText: 'Service Unavailable',
       baseUrl: ollamaBaseUrl,
       model: ollamaModel,
       availableModels: [],
-      error: isConnRefused
-        ? `Cannot connect to Ollama at ${ollamaBaseUrl}. Ollama is either not running or inaccessible from this network.`
-        : errorMessage,
+      modelInstalled: false,
+      modelReady: false,
+      error: `Cannot connect to Ollama at ${url}: ${fullError}`,
+      checkedEndpoint: url,
       isCloudPreview,
       advice: isCloudPreview
-        ? 'You are running in the cloud preview container. Localhost points to this container, not your Windows laptop. Run CampusLens locally via `npm run dev` to connect to your local Ollama!'
-        : 'Ensure Ollama is running (`ollama serve` or `ollama run gemma4:e2b`).',
+        ? 'You are running in the cloud preview container. Localhost points to this container, not your Windows laptop. Run CampusLens locally via `npm run dev` on Windows to connect to your local Ollama!'
+        : `Ensure Ollama is running on your Windows laptop (run 'ollama serve' or check Windows taskbar icon) and listening at http://127.0.0.1:11434.`,
     });
   }
-});
 
-// 2. Dynamic Ollama configuration update (for testing custom local IPs or models)
-app.post('/api/ollama/config', (req, res) => {
+  // Ollama responded with non-200 HTTP code
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    return res.status(response.status).json({
+      connected: false,
+      httpStatus: response.status,
+      statusText: response.statusText,
+      baseUrl: ollamaBaseUrl,
+      model: ollamaModel,
+      availableModels: [],
+      modelInstalled: false,
+      modelReady: false,
+      error: `Ollama returned HTTP ${response.status} (${response.statusText})${errorText ? `: ${errorText}` : ''}`,
+      checkedEndpoint: url,
+      isCloudPreview,
+    });
+  }
+
+  // Ollama is online with HTTP 200
+  try {
+    const data = await response.json();
+    const availableModels: string[] = Array.isArray(data.models)
+      ? data.models.map((m: any) => m.name || m.model).filter(Boolean)
+      : [];
+
+    // Verify whether configured model name matches an installed model
+    const cleanConfigured = ollamaModel.trim().toLowerCase();
+    const modelInstalled = availableModels.some((m: string) => {
+      const cleanM = m.trim().toLowerCase();
+      return (
+        cleanM === cleanConfigured ||
+        cleanM === `${cleanConfigured}:latest` ||
+        cleanM.split(':')[0] === cleanConfigured.split(':')[0]
+      );
+    });
+
+    return res.status(200).json({
+      connected: true,
+      httpStatus: 200,
+      statusText: 'OK',
+      baseUrl: ollamaBaseUrl,
+      model: ollamaModel,
+      availableModels,
+      modelInstalled,
+      modelReady: modelInstalled,
+      latencyMs,
+      checkedEndpoint: url,
+      isCloudPreview: false,
+      message: modelInstalled
+        ? `Connected to Ollama on ${ollamaBaseUrl}. Model '${ollamaModel}' is verified and ready.`
+        : `Connected to Ollama on ${ollamaBaseUrl}, but model '${ollamaModel}' was not found in installed models: [${availableModels.join(', ') || 'none'}]. Run 'ollama pull ${ollamaModel}' in PowerShell.`,
+    });
+  } catch (parseErr) {
+    return res.status(502).json({
+      connected: false,
+      httpStatus: 502,
+      statusText: 'Bad Gateway',
+      baseUrl: ollamaBaseUrl,
+      model: ollamaModel,
+      availableModels: [],
+      modelInstalled: false,
+      modelReady: false,
+      error: `Failed to parse /api/tags JSON response: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+      checkedEndpoint: url,
+    });
+  }
+}
+
+// Handler for dynamic Ollama configuration update
+function handleOllamaConfig(req: express.Request, res: express.Response) {
+  res.setHeader('Content-Type', 'application/json');
   const { baseUrl, model } = req.body;
   if (baseUrl && typeof baseUrl === 'string') {
     ollamaBaseUrl = baseUrl.trim();
@@ -128,10 +220,11 @@ app.post('/api/ollama/config', (req, res) => {
     baseUrl: ollamaBaseUrl,
     model: ollamaModel,
   });
-});
+}
 
-// 3. Notice visual extraction via Ollama Chat API
-app.post('/api/ollama/extract', async (req, res) => {
+// Notice visual extraction via Ollama Chat API
+async function handleOllamaExtract(req: express.Request, res: express.Response) {
+  res.setHeader('Content-Type', 'application/json');
   try {
     const { imageBase64, modelOverride } = req.body;
 
@@ -142,10 +235,9 @@ app.post('/api/ollama/extract', async (req, res) => {
     }
 
     // Clean base64 string (strip data:image/png;base64, prefix if present)
-    const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
+    const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '').trim();
 
-    const activeModel = modelOverride || ollamaModel;
-    const chatEndpoint = `${ollamaBaseUrl.replace(/\/+$/, '')}/api/chat`;
+    const activeModel = (modelOverride || ollamaModel).trim();
 
     const promptText = `You are CampusLens, an AI vision extractor for campus bulletin notices, event posters, exam circulars, and workshop flyers.
 
@@ -189,25 +281,35 @@ Do NOT wrap in markdown explanation. Return strictly raw valid JSON.`;
       },
     };
 
-    const controller = new AbortController();
-    // 90 second timeout for local vision inference on CPU/GPU
-    const timeoutId = setTimeout(() => controller.abort(), 90000);
-
-    const response = await fetch(chatEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
+    // Send request to Ollama /api/chat through Node.js backend
+    const { response, url, error } = await fetchOllama(
+      '/api/chat',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(ollamaPayload),
       },
-      body: JSON.stringify(ollamaPayload),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+      120000 // 120 second timeout for vision inference on CPU/GPU
+    );
+
+    if (error || !response) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      return res.status(503).json({
+        error: `Cannot reach Ollama at ${url}: ${errorMsg}`,
+        httpStatus: 503,
+        endpoint: url,
+        model: activeModel,
+      });
+    }
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await response.text().catch(() => '');
       return res.status(response.status).json({
         error: `Ollama API error (${response.status}): ${errorText || response.statusText}`,
-        endpoint: chatEndpoint,
+        httpStatus: response.status,
+        endpoint: url,
         model: activeModel,
       });
     }
@@ -272,12 +374,36 @@ Do NOT wrap in markdown explanation. Return strictly raw valid JSON.`;
 
     return res.status(500).json({
       error: isTimeout
-        ? 'Inference timed out after 90 seconds. Ensure your local GPU/RAM is adequate for gemma4:e2b.'
+        ? 'Inference timed out after 120 seconds. Ensure your local GPU/RAM is adequate for gemma4:e2b.'
         : `Ollama inference failed: ${errorMessage}`,
       endpoint: `${ollamaBaseUrl}/api/chat`,
       model: ollamaModel,
     });
   }
+}
+
+// 1. Explicit Express API Router
+const apiRouter = express.Router();
+apiRouter.get('/ollama/health', handleOllamaHealthCheck);
+apiRouter.get('/ollama/status', handleOllamaHealthCheck);
+apiRouter.post('/ollama/config', handleOllamaConfig);
+apiRouter.post('/ollama/extract', handleOllamaExtract);
+
+// Mount API routes
+app.use('/api', apiRouter);
+
+// Direct fallback registration on app to prevent routing bypass
+app.get('/api/ollama/health', handleOllamaHealthCheck);
+app.get('/api/ollama/status', handleOllamaHealthCheck);
+app.post('/api/ollama/config', handleOllamaConfig);
+app.post('/api/ollama/extract', handleOllamaExtract);
+
+// Strict API catch-all guard: Any unhandled /api/* route MUST return JSON 404, NEVER HTML!
+app.all('/api/*', (_req, res) => {
+  res.status(404).json({
+    error: 'API route not found',
+    path: _req.originalUrl || _req.url,
+  });
 });
 
 // Mount Vite middleware in development or serve static in production

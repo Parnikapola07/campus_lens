@@ -66,10 +66,16 @@ export interface ActionTask {
 
 export interface OllamaStatus {
   connected: boolean;
+  httpStatus?: number | null;
+  statusText?: string;
   baseUrl: string;
   model: string;
   availableModels: string[];
+  modelInstalled?: boolean;
   modelReady?: boolean;
+  checkedEndpoint?: string;
+  latencyMs?: number;
+  message?: string;
   error?: string;
   isCloudPreview?: boolean;
   advice?: string;

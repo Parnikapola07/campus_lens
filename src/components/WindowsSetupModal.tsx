@@ -18,7 +18,7 @@ export const WindowsSetupModal: React.FC<WindowsSetupModalProps> = ({
   onRefreshStatus,
 }) => {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-  const [customUrl, setCustomUrl] = useState(status?.baseUrl || 'http://localhost:11434');
+  const [customUrl, setCustomUrl] = useState(status?.baseUrl || 'http://127.0.0.1:11434');
   const [customModel, setCustomModel] = useState(status?.model || 'gemma4:e2b');
   const [savingConfig, setSavingConfig] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -47,22 +47,22 @@ export const WindowsSetupModal: React.FC<WindowsSetupModalProps> = ({
   const commands = [
     {
       title: '1. Verify Ollama & Model on Windows',
-      desc: 'Confirm your local Ollama instance is serving the gemma4:e2b model:',
+      desc: 'Confirm your local Ollama instance is serving the gemma4:e2b model on 127.0.0.1:',
       cmd: 'ollama run gemma4:e2b',
     },
     {
-      title: '2. Clone or Download Project',
-      desc: 'Export this project to your Windows machine:',
-      cmd: 'git clone <repo-url> campuslens\ncd campuslens',
+      title: '2. Verify Ollama Tags Endpoint',
+      desc: 'Test that Ollama is responding on IPv4 127.0.0.1:11434 in PowerShell:',
+      cmd: 'curl http://127.0.0.1:11434/api/tags',
     },
     {
-      title: '3. Install Dependencies',
-      desc: 'Install required Node.js packages (Node v18+ recommended):',
+      title: '3. Install Dependencies in CampusLens',
+      desc: 'Install required Node.js packages on your Windows laptop:',
       cmd: 'npm install',
     },
     {
       title: '4. Launch CampusLens Locally',
-      desc: 'Starts both the Express backend adapter and Vite frontend on port 3000:',
+      desc: 'Starts the Express backend adapter and Vite frontend on port 3000:',
       cmd: 'npm run dev',
     },
   ];
@@ -98,9 +98,9 @@ export const WindowsSetupModal: React.FC<WindowsSetupModalProps> = ({
             <span className="font-semibold text-amber-300 block mb-1">
               Why does Ollama show disconnected in the cloud preview?
             </span>
-            This AI Studio web preview runs in an isolated Google Cloud sandbox. When the cloud backend tries to query{' '}
-            <code className="text-amber-300 font-mono px-1 py-0.5 bg-black/40 rounded">http://localhost:11434</code>,
-            &quot;localhost&quot; refers to the cloud container, not your Windows laptop!
+            This AI Studio web preview runs in an isolated Google Cloud container. When the cloud backend tries to query{' '}
+            <code className="text-amber-300 font-mono px-1 py-0.5 bg-black/40 rounded">http://127.0.0.1:11434</code>,
+            &quot;127.0.0.1&quot; refers to the cloud container, not your physical Windows laptop!
             <br className="my-1" />
             <strong className="text-white">To use your local Ollama model:</strong> Run CampusLens directly on your Windows laptop using the 4 steps below.
           </div>
@@ -109,15 +109,19 @@ export const WindowsSetupModal: React.FC<WindowsSetupModalProps> = ({
         {/* Current Connection Status Box */}
         <div className="mt-4 p-4 rounded-lg bg-slate-900 border border-slate-800">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-xs font-semibold text-slate-300">Current Adapter Status</div>
+            <div className="text-xs font-semibold text-slate-300">Backend Health &amp; Model Status</div>
             <div className="flex items-center gap-2">
               <span
                 className={`inline-block w-2 h-2 rounded-full ${
-                  status?.connected ? 'bg-teal-400' : 'bg-rose-500'
+                  status?.connected ? (status?.modelReady ? 'bg-teal-400' : 'bg-amber-400') : 'bg-rose-500'
                 }`}
               />
               <span className="text-xs font-medium text-slate-300">
-                {status?.connected ? 'Connected to Ollama' : 'Disconnected'}
+                {!status?.connected
+                  ? 'Disconnected'
+                  : status?.modelReady
+                  ? 'Connected & Model Verified'
+                  : 'Connected (Model Missing)'}
               </span>
             </div>
           </div>
@@ -125,24 +129,48 @@ export const WindowsSetupModal: React.FC<WindowsSetupModalProps> = ({
           <div className="grid grid-cols-2 gap-2 text-xs text-slate-400">
             <div>
               <span className="text-slate-500">Configured Endpoint: </span>
-              <code className="text-slate-300 font-mono">{status?.baseUrl || 'http://localhost:11434'}</code>
+              <code className="text-slate-300 font-mono">{status?.baseUrl || 'http://127.0.0.1:11434'}</code>
             </div>
             <div>
               <span className="text-slate-500">Target Model: </span>
               <code className="text-slate-300 font-mono">{status?.model || 'gemma4:e2b'}</code>
             </div>
+            <div>
+              <span className="text-slate-500">HTTP Response: </span>
+              <span className="font-mono text-slate-300">
+                {status?.httpStatus ? `HTTP ${status.httpStatus} ${status.statusText || ''}` : 'No response / Network error'}
+              </span>
+            </div>
+            <div>
+              <span className="text-slate-500">Roundtrip Latency: </span>
+              <span className="font-mono text-teal-300">
+                {status?.latencyMs !== undefined ? `${status.latencyMs} ms` : 'N/A'}
+              </span>
+            </div>
           </div>
 
           {status?.error && (
-            <div className="mt-2 text-xs text-rose-400 font-mono bg-rose-950/30 p-2 rounded border border-rose-900/50">
-              {status.error}
+            <div className="mt-2.5 text-xs text-rose-300 font-mono bg-rose-950/40 p-2.5 rounded border border-rose-900/50 break-words">
+              <strong>Error Details:</strong> {status.error}
             </div>
           )}
 
-          {status?.connected && status?.availableModels && (
-            <div className="mt-2 text-xs text-teal-300">
-              Available models in your Ollama:{' '}
-              <span className="font-mono text-slate-300">{status.availableModels.join(', ')}</span>
+          {status?.connected && (
+            <div className="mt-2.5 pt-2 border-t border-slate-800 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Model Verification:</span>
+                <span className={status.modelReady ? 'text-teal-400 font-semibold' : 'text-amber-400 font-semibold'}>
+                  {status.modelReady ? `✓ Model '${status.model}' found` : `✗ Model '${status.model}' not found`}
+                </span>
+              </div>
+              <div className="mt-1 text-slate-400 text-[11px]">
+                Installed Ollama Models:{' '}
+                <span className="font-mono text-slate-200">
+                  {status.availableModels && status.availableModels.length > 0
+                    ? status.availableModels.join(', ')
+                    : 'None detected'}
+                </span>
+              </div>
             </div>
           )}
         </div>
@@ -187,12 +215,12 @@ export const WindowsSetupModal: React.FC<WindowsSetupModalProps> = ({
           </h4>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs mb-3">
             <div>
-              <label className="block text-slate-400 mb-1">Ollama Base URL</label>
+              <label className="block text-slate-400 mb-1">Ollama Base URL (Use 127.0.0.1)</label>
               <input
                 type="text"
                 value={customUrl}
                 onChange={(e) => setCustomUrl(e.target.value)}
-                placeholder="http://localhost:11434"
+                placeholder="http://127.0.0.1:11434"
                 className="w-full px-3 py-1.5 bg-slate-950 border border-slate-700 rounded text-slate-200 font-mono focus:border-teal-500 focus:outline-none"
               />
             </div>
@@ -217,7 +245,7 @@ export const WindowsSetupModal: React.FC<WindowsSetupModalProps> = ({
                 onClick={onRefreshStatus}
                 className="px-3 py-1.5 text-xs text-slate-300 bg-slate-800 hover:bg-slate-700 rounded transition-colors"
               >
-                Recheck Connection
+                Test Health Endpoint (/api/ollama/health)
               </button>
               <button
                 type="submit"
